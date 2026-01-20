@@ -1,0 +1,31 @@
+# BERTopic configuration for Chinese-language CAM discourse
+
+embedding_model: paraphrase-multilingual-MiniLM-L12-v2
+
+umap:
+  n_neighbors: 15
+  n_components: 5
+  min_dist: 0.0
+  metric: cosine
+
+hdbscan:
+  min_cluster_size: 30
+  min_samples: 10
+  metric: euclidean
+  cluster_selection_method: eom
+
+vectorizer:
+  ngram_range: [1, 2]
+  min_df: 5
+  max_df: 0.85
+  stop_words: chinese_custom
+
+language_processing:
+  segmentation_tool: jieba
+  preserve_code_switching: true
+  preserve_tcm_terms: true
+  preserve_emojis: selective
+
+outlier_handling:
+  label: -1
+  remove_from_analysis: true

@@ -19,15 +19,20 @@ and language-specific preprocessing choices used in the analysis.
 ## Repository Structure
 
 ```text
-├── data/
-│   ├── sample_data.csv       # Synthetic/anonymized sample for testing pipeline
-│   ├── stopwords_custom.txt  # Culturally-sensitive stopword list
-│   └── medical_dict.txt      # Custom dictionary for Jieba segmentation (TCM + Biomed terms)
-├── notebooks/
-│   ├── 01_preprocessing.ipynb   # Cleaning, segmentation, and deduplication
-│   ├── 02_bertopic_modeling.ipynb # Embedding generation and initial clustering
-│   └── 03_visualization.ipynb   # Topic distance maps and hierarchy plots
-├── src/
-│   └── utils.py              # Helper functions for text normalization
-├── requirements.txt          # Dependencies
-└── README.md
+cam-frames-bertopic/
+├── README.md
+├── requirements.txt
+├── .gitignore
+│
+├── configs/
+│   └── bertopic_config.yaml        # Documented model and preprocessing parameters
+│
+├── scripts/
+│   ├── 00_parse_youtube_jsonl.py    # Parse YouTube comment JSONL files
+│   ├── 01_clean_preprocess.py       # Culturally sensitive text preprocessing
+│   ├── 02_fit_bertopic.py           # BERTopic modeling pipeline
+│   ├── 03_topic_tables.py           # Topic summary tables for analysis and reporting
+│   └── 04_frame_mapping_template.py # Human coding template for information frames
+│
+└── data_sample/
+    └── README_sample_data.md        # Description of sample data usage

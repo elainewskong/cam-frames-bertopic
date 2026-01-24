@@ -122,10 +122,13 @@ def main():
     # -----------------------------
     min_df = args.min_df
     max_df = args.max_df
-    if len(documents) < 500:
+    if len(documents) < 3000:
         # keep pipeline stable for environment tests
         min_df = min(min_df, 2)
         max_df = max(max_df, 0.95)
+
+        min_df = max(1, min_df)
+        max_df = min(1.0, max_df)
 
     # -----------------------------
     # Embedding model

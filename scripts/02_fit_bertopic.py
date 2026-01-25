@@ -182,6 +182,11 @@ def main():
 
     topics, probs = topic_model.fit_transform(documents)
 
+    from collections import Counter
+    cnt = Counter(topics)
+    print("Topic counts (top 10):", cnt.most_common(10))
+
+
     # -----------------------------
     # Save outputs
     # -----------------------------

@@ -186,7 +186,10 @@ def main():
     cnt = Counter(topics)
     print("Topic counts (top 10):", cnt.most_common(10))
 
-
+    topic_model.reduce_topics(documents, nr_topics=40)
+    topics = topic_model.topics_
+    
+    
     # -----------------------------
     # Save outputs
     # -----------------------------

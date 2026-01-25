@@ -5,6 +5,8 @@ import os
 import re
 import sys
 from datetime import datetime
+from collections import Counter
+from importlib.metadata import version as pkg_version
 
 import pandas as pd
 
@@ -19,10 +21,8 @@ import jieba
 # -----------------------------
 # Token filtering utilities
 # -----------------------------
-# Punctuation-only or symbol-only tokens (e.g., "，", "。", "!!!", "…", "/")
 PUNCT_ONLY_RE = re.compile(r"^[\W_]+$", re.UNICODE)
 
-# Rough emoji block matcher (not perfect, but works well in practice)
 EMOJI_RE = re.compile(
     "["
     "\U0001F300-\U0001F5FF"
@@ -40,16 +40,17 @@ EMOJI_RE = re.compile(
     flags=re.UNICODE
 )
 
+
 def is_emoji_token(tok: str) -> bool:
     return bool(EMOJI_RE.fullmatch(tok))
 
 
-def build_tokenizer(keep_emoji: bool = False):
+def build_tokenizer(keep_emoji: bool = False, drop_punct_only: bool = True):
     """
-    Create a Jieba tokenizer that:
-    - segments Chinese and keeps Latin tokens
-    - removes punctuation-only tokens
-    - optionally removes emoji-only tokens
+    Jieba tokenizer for Chinese + mixed Latin tokens.
+    Filters:
+      - optional drop punctuation/symbol-only tokens
+      - optional drop emoji-only tokens
     """
     def jieba_tokenizer(text: str):
         toks = []
@@ -58,11 +59,9 @@ def build_tokenizer(keep_emoji: bool = False):
             if not tok:
                 continue
 
-            # remove punctuation/symbol-only tokens
-            if PUNCT_ONLY_RE.match(tok):
+            if drop_punct_only and PUNCT_ONLY_RE.match(tok):
                 continue
 
-            # optionally drop emoji-only tokens (keeps emoji inside mixed tokens rare)
             if not keep_emoji and is_emoji_token(tok):
                 continue
 
@@ -72,12 +71,16 @@ def build_tokenizer(keep_emoji: bool = False):
     return jieba_tokenizer
 
 
-# -----------------------------
-# Manifest writer
-# -----------------------------
 def write_manifest(path: str, payload: dict):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
+
+
+def safe_pkg_version(name: str) -> str:
+    try:
+        return pkg_version(name)
+    except Exception:
+        return "unknown"
 
 
 def main():
@@ -89,7 +92,7 @@ def main():
     parser.add_argument("--embedding_model", default="paraphrase-multilingual-MiniLM-L12-v2",
                         help="SentenceTransformer model")
 
-    parser.add_argument("--min_topic_size", type=int, default=30, help="Minimum topic size (HDBSCAN min_cluster_size)")
+    parser.add_argument("--min_topic_size", type=int, default=30, help="HDBSCAN min_cluster_size")
     parser.add_argument("--min_samples", type=int, default=10, help="HDBSCAN min_samples")
 
     parser.add_argument("--ngram_max", type=int, default=2, help="Max ngram length")
@@ -106,6 +109,14 @@ def main():
 
     # Tokenization options
     parser.add_argument("--keep_emoji", action="store_true", help="Keep emoji-only tokens in modeling")
+    parser.add_argument("--drop_punct_only", action="store_true", help="Drop punctuation-only tokens (recommended)")
+
+    # Pipeline stability
+    parser.add_argument("--testing_mode", action="store_true",
+                        help="Force stable vectorizer settings (min_df=1, max_df=1.0) for small/test runs")
+
+    # Topic reduction
+    parser.add_argument("--reduce_to", type=int, default=40, help="Reduce topics to this number (incl. -1 outlier topic)")
 
     args = parser.parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
@@ -117,18 +128,12 @@ def main():
     documents = df[args.text_col].dropna().astype(str).tolist()
 
     # -----------------------------
-    # Small-data safeguard
-    # Avoid max_df/min_df crash in tiny test corpora
+    # Vectorizer parameters (stable + reproducible)
     # -----------------------------
-    min_df = args.min_df
-    max_df = args.max_df
-    if len(documents) < 3000:
-        # keep pipeline stable for environment tests
-        min_df = min(min_df, 2)
-        max_df = max(max_df, 0.95)
-
-        min_df = max(1, min_df)
-        max_df = min(1.0, max_df)
+    if args.testing_mode:
+        min_df, max_df = 1, 1.0
+    else:
+        min_df, max_df = args.min_df, args.max_df
 
     # -----------------------------
     # Embedding model
@@ -138,10 +143,14 @@ def main():
     # -----------------------------
     # Vectorizer
     # -----------------------------
-    tokenizer = build_tokenizer(keep_emoji=args.keep_emoji)
+    tokenizer = build_tokenizer(
+        keep_emoji=args.keep_emoji,
+        drop_punct_only=args.drop_punct_only
+    )
+
     vectorizer_model = CountVectorizer(
         tokenizer=tokenizer,
-        token_pattern=None,  # required when custom tokenizer is provided
+        token_pattern=None,
         ngram_range=(1, args.ngram_max),
         min_df=min_df,
         max_df=max_df,
@@ -159,17 +168,14 @@ def main():
         random_state=args.random_state,
     )
 
-    # Use cosine for consistency with UMAP embeddings space
+    # Euclidean is typical in UMAP-reduced space
     hdbscan_model = hdbscan.HDBSCAN(
         min_cluster_size=args.min_topic_size,
         min_samples=args.min_samples,
-        metric="euclidean" if args.umap_metric == "euclidean" else "euclidean",
+        metric="euclidean",
         cluster_selection_method="eom",
         prediction_data=True,
     )
-
-    # Note: We are clustering the UMAP-reduced embeddings. Euclidean is typical there.
-    # If you prefer strict consistency, you can switch metric="cosine" and test stability.
 
     topic_model = BERTopic(
         embedding_model=embedding_model,
@@ -180,28 +186,49 @@ def main():
         verbose=True,
     )
 
-    topics, probs = topic_model.fit_transform(documents)
-
-    from collections import Counter
-    cnt = Counter(topics)
-    print("Topic counts (top 10):", cnt.most_common(10))
-
-    topic_model.reduce_topics(documents, nr_topics=40)
-    topics = topic_model.topics_
-    
-    
     # -----------------------------
-    # Save outputs
+    # Fit (pre-reduction)
     # -----------------------------
-    df_out = pd.DataFrame({"text": documents, "topic": topics})
-    df_out.to_csv(os.path.join(args.output_dir, "doc_topics.csv"), index=False, encoding="utf-8-sig")
+    topics_pre, _ = topic_model.fit_transform(documents)
+
+    cnt_pre = Counter(topics_pre)
+    outliers_pre = cnt_pre.get(-1, 0)
+    outlier_rate_pre = outliers_pre / max(len(topics_pre), 1)
+    print("Pre-reduction topic counts (top 10):", cnt_pre.most_common(10))
+
+    # Save pre-reduction outputs
+    pd.DataFrame({"text": documents, "topic": topics_pre}).to_csv(
+        os.path.join(args.output_dir, "doc_topics_pre_reduction.csv"),
+        index=False, encoding="utf-8-sig"
+    )
+    topic_model.get_topic_info().to_csv(
+        os.path.join(args.output_dir, "topic_info_pre_reduction.csv"),
+        index=False, encoding="utf-8-sig"
+    )
+
+    # -----------------------------
+    # Reduce topics (post-reduction)
+    # -----------------------------
+    topic_model.reduce_topics(documents, nr_topics=args.reduce_to)
+    topics_post = topic_model.topics_
+
+    cnt_post = Counter(topics_post)
+    outliers_post = cnt_post.get(-1, 0)
+    outlier_rate_post = outliers_post / max(len(topics_post), 1)
+    print("Post-reduction topic counts (top 10):", cnt_post.most_common(10))
+
+    # Save post-reduction outputs
+    pd.DataFrame({"text": documents, "topic": topics_post}).to_csv(
+        os.path.join(args.output_dir, "doc_topics.csv"),
+        index=False, encoding="utf-8-sig"
+    )
 
     topic_info = topic_model.get_topic_info()
     topic_info.to_csv(os.path.join(args.output_dir, "topic_info.csv"), index=False, encoding="utf-8-sig")
 
     # Top keywords per topic
     rows = []
-    for t in sorted(set(topics)):
+    for t in sorted(set(topics_post)):
         if t == -1:
             continue
         words = topic_model.get_topic(t)
@@ -212,8 +239,10 @@ def main():
 
     # Representative docs if available
     if "Representative_Docs" in topic_info.columns:
-        rep = topic_info[["Topic", "Representative_Docs"]].copy()
-        rep.to_csv(os.path.join(args.output_dir, "representative_docs.csv"), index=False, encoding="utf-8-sig")
+        topic_info[["Topic", "Representative_Docs"]].to_csv(
+            os.path.join(args.output_dir, "representative_docs.csv"),
+            index=False, encoding="utf-8-sig"
+        )
 
     # Save model (optional)
     try:
@@ -222,23 +251,37 @@ def main():
         pass
 
     # -----------------------------
-    # Summary stats + manifest
+    # Manifest
     # -----------------------------
-    outlier_rate = sum(1 for t in topics if t == -1) / max(len(topics), 1)
-
     manifest = {
         "timestamp": datetime.utcnow().isoformat() + "Z",
         "python": sys.version,
         "n_documents": len(documents),
-        "n_unique_topics": len(set(topics)),
-        "outlier_rate": outlier_rate,
+
+        "pre_reduction": {
+            "n_unique_topics": len(set(topics_pre)),
+            "outliers": outliers_pre,
+            "outlier_rate": outlier_rate_pre,
+        },
+        "post_reduction": {
+            "reduce_to": args.reduce_to,
+            "n_unique_topics": len(set(topics_post)),
+            "outliers": outliers_post,
+            "outlier_rate": outlier_rate_post,
+        },
+
         "embedding_model": args.embedding_model,
-        "keep_emoji": bool(args.keep_emoji),
+        "tokenizer": {
+            "jieba": True,
+            "keep_emoji": bool(args.keep_emoji),
+            "drop_punct_only": bool(args.drop_punct_only),
+        },
         "vectorizer": {
             "ngram_range": [1, args.ngram_max],
             "min_df": min_df,
             "max_df": max_df,
             "max_features": args.max_features,
+            "testing_mode": bool(args.testing_mode),
         },
         "umap": {
             "n_neighbors": args.n_neighbors,
@@ -250,23 +293,23 @@ def main():
         "hdbscan": {
             "min_cluster_size": args.min_topic_size,
             "min_samples": args.min_samples,
-            "metric": "euclidean" if args.umap_metric == "euclidean" else "euclidean",
+            "metric": "euclidean",
             "cluster_selection_method": "eom",
         },
         "package_versions": {
-            "bertopic": getattr(__import__("bertopic"), "__version__", "unknown"),
-            "umap": getattr(__import__("umap"), "__version__", "unknown"),
-            "hdbscan": getattr(__import__("hdbscan"), "__version__", "unknown"),
-            "jieba": getattr(__import__("jieba"), "__version__", "unknown"),
-            "sklearn": getattr(__import__("sklearn"), "__version__", "unknown"),
-            "sentence_transformers": getattr(__import__("sentence_transformers"), "__version__", "unknown"),
+            "bertopic": safe_pkg_version("bertopic"),
+            "umap-learn": safe_pkg_version("umap-learn"),
+            "hdbscan": safe_pkg_version("hdbscan"),
+            "jieba": safe_pkg_version("jieba"),
+            "scikit-learn": safe_pkg_version("scikit-learn"),
+            "sentence-transformers": safe_pkg_version("sentence-transformers"),
+            "pandas": safe_pkg_version("pandas"),
         },
     }
+
     write_manifest(os.path.join(args.output_dir, "run_manifest.json"), manifest)
 
     print(f"Documents: {len(documents)}")
-    print(f"Unique topics: {len(set(topics))}")
-    print(f"Outlier rate: {outlier_rate:.3f}")
     print(f"Saved outputs to: {args.output_dir}")
     print(f"Saved manifest: {os.path.join(args.output_dir, 'run_manifest.json')}")
 

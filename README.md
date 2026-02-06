@@ -5,7 +5,7 @@
 
 This repository contains the replication code and documentation for the study:
 
-> **"Epistemic validation in Chinese-language cancer-related CAM discourse on YouTube: Identifying information frames"** > *Target Journal: Aslib Journal of Information Management*
+> **"Epistemic validation in Chinese-language cancer-related CAM discourse on YouTube: Identifying information frames"** > *Target Journal: *
 
 This project analyzes Chinese-language YouTube comments related to cancer and Complementary and Alternative Medicine (CAM). It employs a **human-in-the-loop topic modeling pipeline** (BERTopic) to identify how health information is processed, evaluated, and framed across cultural boundaries.
 
